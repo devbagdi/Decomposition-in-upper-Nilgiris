@@ -1,0 +1,484 @@
+---
+title: "decomp_analysis"
+author: "dev bagdi"
+date: "2026-04-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(reshape2)
+library(purrr)
+library(lubridate)
+library(dplyr)
+library(ggplot2)
+library(ggeffects)
+library(ggthemes)
+library(stringr)
+library(tidyr)
+library(SMPracticals)
+library(tidyverse)
+library(broom)
+library(arm)
+library(lme4)
+library(lmerTest)
+library(emmeans)
+library(sjPlot)
+library(MuMIn)
+library(ggpattern)
+library(multcomp)
+```
+
+
+1. litter quality
+a. import and tidy data
+(Table S2)
+```{r}
+cn_initial <- read.csv("cn_data_final.csv", header=T, na.strings=c("","NA"))
+
+cn_initial<- cn_initial %>% 
+  mutate(cnratio= carbon/nitrogen,
+         )
+#adding sample size
+sample_size <- cn_initial %>%
+  group_by(litter_type) %>%
+  summarise(n = n())
+
+View(cn_initial)
+#Mean dataframe for C, N and C:N
+nitrogenmean<-cn_initial %>% 
+  group_by(litter_type, treatment) %>%  
+  summarise(nmean=mean(nitrogen),
+            nse=sd(nitrogen)/sqrt(n()),
+            CNmean=mean(cnratio),
+            CNse=sd(cnratio)/sqrt(n()),
+            Cmean=mean(carbon),
+            Cse=sd(carbon/sqrt(n()))) %>% 
+  mutate(treatment = fct_recode(treatment,
+    "Invaded" = "Acacia",
+    "Uninvaded" = "Grassland")) %>% 
+  ungroup()
+ 
+
+litterqualitymean<-nitrogenmean %>% 
+  pivot_longer(
+    cols = c(nmean, nse, CNmean, CNse, Cmean, Cse),
+    names_to = c("variable", ".value"),
+    names_pattern = "(n|CN|C)(mean|se)"
+  )
+
+litterqualitymean$variable <- recode(litterqualitymean$variable,
+                               "n" = "Nitrogen (%)",
+                               "CN" = "C:N ratio",
+                               "C" = "Carbon (%)")
+```
+
+b. plotting mean and sem for N and C:N
+(figure S1)
+```{r}
+
+ggplot(
+  litterqualitymean %>%
+    filter(variable != "Carbon (%)"),
+  aes(x = litter_type, y = mean)
+) +
+  geom_point(size = 2.8, shape = 16) +
+  geom_errorbar(
+    aes(ymin = mean - se, ymax = mean + se),
+    width = 0.15,
+    linewidth = 0.5
+  ) +
+  facet_wrap(
+    ~ factor(variable, c("Nitrogen (%)", "C:N ratio")),
+    scales = "free_y"
+  ) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 10)) +
+  labs(
+    x = "Litter type",
+    y = "Mean ± SE"
+  ) +
+  theme_classic(base_size = 12) +
+  theme(
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold", size = 12),
+
+    legend.position = "none",
+
+    axis.text = element_text(color = "black", size = 10),
+    axis.title = element_text(face = "bold", size = 12),
+
+    axis.line = element_line(linewidth = 0.6),
+    axis.ticks = element_line(linewidth = 0.5),
+
+    panel.grid = element_blank(),
+
+    plot.margin = margin(6, 8, 6, 6)
+  )
+
+
+ggsave("figureS1.tiff",
+       width = 7, height = 5,
+       units = "in", dpi = 300,
+       compression = "lzw")
+
+```
+
+c. Model for litter nitrogen
+```{r}
+stat_nitrogen<-lm(nitrogen ~ litter_type, data=cn_initial)
+display(stat_nitrogen)
+summary(stat_nitrogen)
+anova(stat_nitrogen)
+emmeans(stat_nitrogen, list(pairwise~litter_type), adjust="tukey")
+```
+
+2. Decomposition dynamics
+a. import and tidy for mass loss
+```{r}
+litter<- read.csv("decomposition_final.csv")
+
+mass_loss_means<- litter %>% group_by(litter_type, treatment, round) %>% 
+  summarise(mass_at_t=mean(mass_remaining),
+            t=mean(days),
+            round=mean(round),
+            mass_at_t_se = round(sd(mass_remaining)/sqrt(n()))
+            )
+
+round<-c(1,2,3,4,5)
+days<-c(30, 71, 171, 300, 580 )
+mass_loss_means$round<-replace(mass_loss_means$round, mass_loss_means$round %in% round, days)
+```
+
+b. plotting mass loss over time
+(Figure S3)
+```{r}
+ggplot(
+  data = mass_loss_means,
+  aes(x = round, y = mass_at_t, shape = litter_type)
+) +
+  geom_point(
+    aes(shape = litter_type),
+    size = 2.4,
+    alpha = 0.8
+  ) +
+  facet_wrap(~treatment)+
+  scale_x_continuous(
+    breaks = unique(mass_loss_means$round)
+  ) +
+  labs(
+    x = "Days since deployment",
+    y = "Fraction of mass remaining",
+    shape = "Litter type"
+  ) +
+  scale_color_grey(start = 0.2, end = 0.7)+
+  theme_classic(base_size = 8) +
+  scale_shape_manual(values = c(3, 1, 4, 6))+
+  theme_classic(base_size = 12) +
+  theme(
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold", size = 12),
+
+    legend.position = "right",
+    legend.title = element_text(face = "bold"),
+    legend.text = element_text(size = 10),
+    legend.key = element_blank(),
+
+    axis.text = element_text(color = "black", size = 10),
+    axis.title = element_text(face = "bold", size = 12),
+
+    axis.line = element_line(linewidth = 0.6),
+    axis.ticks = element_line(linewidth = 0.5),
+
+    panel.grid = element_blank(),
+
+    plot.title = element_text(face = "bold", hjust = 0, size = 13),
+    plot.margin = margin(6, 8, 6, 6)
+  )
+
+ggsave("figureS3.tiff",
+       width = 9, height = 4,
+       units = "in", dpi = 300,
+       compression = "lzw")
+```
+
+c. anova for difference at each round (change round and treatment)
+```{r}
+anova(lmer(mass_remaining ~litter_type +(1|plot_code), data = litter %>% filter(round=="1") %>% filter(treatment=="Invaded")))
+anova(lmer(mass_remaining ~litter_type +(1|plot_code), data = litter %>% filter(round=="2") %>% filter(treatment=="Invaded")))
+anova(lmer(mass_remaining ~litter_type +(1|plot_code), data = litter %>% filter(round=="3") %>% filter(treatment=="Invaded")))
+anova(lmer(mass_remaining ~litter_type +(1|plot_code), data = litter %>% filter(round=="4") %>% filter(treatment=="Invaded")))
+anova(lmer(mass_remaining ~litter_type +(1|plot_code), data = litter %>% filter(round=="5") %>% filter(treatment=="Invaded")))
+anova(lmer(mass_remaining ~litter_type +(1|plot_code), data = litter %>% filter(round=="1") %>% filter(treatment=="Uninvaded")))
+anova(lmer(mass_remaining ~litter_type +(1|plot_code), data = litter %>% filter(round=="2") %>% filter(treatment=="Uninvaded")))
+anova(lmer(mass_remaining ~litter_type +(1|plot_code), data = litter %>% filter(round=="3") %>% filter(treatment=="Uninvaded")))
+anova(lmer(mass_remaining ~litter_type +(1|plot_code), data = litter %>% filter(round=="4") %>% filter(treatment=="Uninvaded")))
+anova(lmer(mass_remaining ~litter_type +(1|plot_code), data = litter %>% filter(round=="5") %>% filter(treatment=="Uninvaded")))
+```
+
+3. decomposition rates (k)
+a. k estimation by nls and tidy
+```{r}
+models1 <- litter %>%
+  group_by(litter_type, treatment, point_code, plot_code, experiment, origin, counter_point_code) %>%
+  nest() %>%
+  mutate(
+    model = map(data, ~ tryCatch(
+     nls(mass_remaining ~  exp(-k * time), data = ., start = list(k = 0.5)),
+      error = function(e) NULL
+    )),
+    tidied = map(model, ~ if (!is.null(.)) tidy(.) else NULL)
+  ) %>%
+  unnest(tidied)
+```
+
+Means of decomposition rates by environment and litter type (Table 1)
+```{r}
+model_result <- models1 %>%
+  group_by(treatment, litter_type, experiment) %>%
+  summarise(
+    average_k = round(mean(estimate, na.rm = TRUE), 2),
+    se_k = round(sd(estimate, na.rm = TRUE) / sqrt(n()), 2),
+    .groups = "drop"
+  )
+
+```
+
+b. Mixed effects model for in-situ k differences (Table S8)
+```{r}
+stat_home_2<-lmer(estimate~litter_type+ (1|plot_code), data=models1 %>% filter(
+  (litter_type == "Grassland litter" & treatment == "Uninvaded") |
+    (litter_type %in% c("Acacia litter", "Acacia understory litter") & treatment == "Invaded") 
+  ))
+display(stat_home_2)
+anova(stat_home_2)
+emm_=emmeans(stat_home_2, ~litter_type)
+pairs(emm_, simple='each')
+tab_model(stat_home_2)
+```
+
+
+Number of litter bags and sets analysed (Table S3)
+```{r}
+with(litter ,table(litter_type,round, treatment))
+with(models1, table(litter_type, treatment))
+with(models1, count(litter_type, treatment))
+```
+
+d. Mixed effects model for combined effect of environment and litter type (Table S4, S5, S6)
+```{r}
+stat_reciprocal <- lmer(
+  estimate ~ treatment * litter_type + (1 | plot_code),
+  data = models1 %>% filter(litter_type %in% c("Acacia litter", "Acacia understory litter", "Grassland litter"))
+)
+display(stat_reciprocal)
+anova(stat_reciprocal)
+
+emm=emmeans(stat_reciprocal, ~treatment*litter_type)
+emm=emmeans(stat_reciprocal, c("treatment", "litter_type"))
+
+pairs(emm, simple='each')
+```
+
+letters for pairwise difference
+```{r}
+
+
+emm_pairs<-pairs(emm, adjust="tukey")
+pw_df <- as.data.frame(emm_pairs)
+# Generate compact letters
+pvals <- pw_df$p.value
+names(pvals) <- gsub(" - ", "-", pw_df$contrast)
+letters <- multcompView::multcompLetters(
+  pvals,
+  threshold = 0.05,
+  Letters = LETTERS
+)
+
+letters$Letters
+```
+
+
+```{r}
+#table for effect sizes
+tab_model(stat_reciprocal, pred.labels = TRUE)
+
+anova(stat_reciprocal)%>% as.data.frame() %>% write.csv(file = "reciprocal anova.csv")
+```
+
+e. home and reciprocal decomposition bar graph (Figure 3)
+```{r}
+ggplot(
+  data = model_result %>%
+    filter(litter_type %in% c(
+      "Acacia litter",
+      "Grassland litter",
+      "Acacia understory litter"
+    )),
+  aes(
+    x = litter_type,
+    y = average_k,
+    fill = treatment,
+    pattern = experiment
+  )
+) +
+  geom_col_pattern(
+    just = 0.5,
+    width = 0.5,
+    colour = "black",
+    position = position_dodge(width = 0.6),
+    pattern_angle = 45,
+    pattern_colour = NA,
+pattern_fill = "white",
+pattern_density = 0.40,
+pattern_spacing = 0.03
+  ) +
+  geom_errorbar(
+    aes(ymin = average_k - se_k, ymax = average_k + se_k),
+    position = position_dodge(width = 0.6),
+    width = 0.15
+  ) +
+  scale_fill_manual(values = c("Invaded" = "#77ACED",
+  "Uninvaded" = "#6DBF6D"))+
+  scale_pattern_manual(values = c(
+    "Home" = "circle",
+    "Reciprocal deployment" = "none"
+  )) +
+  theme_classic() +
+  labs(
+    x = "Litter type",
+    y = expression("Decay rate (k, " ~ y^-1 ~ ") ± SE"),
+    fill = "Environment",
+    pattern = "Experiment"
+  )+
+  guides(
+  fill = guide_legend(
+    override.aes = list(pattern = "none")
+  ),
+  pattern = guide_legend(
+    override.aes = list(fill = "grey50")
+  )
+)
+
+ggsave("figure3.tiff",
+       width = 8, height = 4,
+       units = "in", dpi = 300,
+       compression = "lzw")
+
+```
+
+f. Dataset for N vs K regression
+```{r}
+cn_means<- cn_initial %>% 
+  group_by(origin, litter_type) %>% 
+  summarise(avgnitrogen=mean(nitrogen), avgcarbon=mean(carbon), avgCN=mean(CN)) %>% 
+  ungroup()
+
+NandKdataframe<- models1 %>% left_join(cn_means)
+
+NandKdataframe_m<-NandKdataframe %>% group_by(plot_code, treatment, litter_type) %>% summarise(k=mean(estimate), n =mean(avgnitrogen))
+```
+
+g. Linear models for NvsK (Table S7) 
+```{r}
+NandKdataframeregression <- NandKdataframe   %>% lmer(formula = estimate~avgnitrogen*treatment+(1|plot_code)+(avgnitrogen|litter_type))
+
+summary(NandKdataframeregression)
+anova(NandKdataframeregression)
+tab_model((NandKdataframeregression))
+r.squaredGLMM(NandKdataframeregression)
+
+
+#slopes for each environment
+reg_slopes <- emtrends(
+  NandKdataframeregression,
+  ~ treatment,
+  var = "avgnitrogen"
+)
+
+reg_slopes
+```
+
+g. Figure for N vs K model (Figure 4)
+```{r}
+pred_reg <- ggpredict(
+  NandKdataframeregression,
+  terms = c("avgnitrogen [all]", "treatment")
+)
+pred_reg$treatment <- pred_reg$group
+
+
+ggplot(
+  data = NandKdataframe_m,
+  aes(x = n, y = k )
+) +
+  geom_point(color = "black", size = 1.2, aes(shape = litter_type)) +
+
+  # predicted line
+  geom_line(
+    data = pred_reg ,
+    aes(x = x, y = predicted, color = group, linetype = group),
+    linewidth = 0.9
+  ) +
+  scale_linetype_manual(
+  values = c(
+    "Invaded" = "dashed",
+    "Uninvaded" = "solid"
+  )
+)+
+  # confidence interval
+  geom_ribbon(
+    data = pred_reg,
+    aes(x = x, y=predicted, ymin = conf.low, ymax = conf.high, fill = group),
+    alpha = 0.2,
+    color = NA
+  ) +
+
+  labs(
+    x = "Initial Nitrogen content of leaf litter (%)",
+    y = expression("Decay rate (k, " ~ y^-1 ~ ")"),
+    shape = "Litter type",
+  ) +
+  guides(
+  shape = "none",
+  color = "none",
+  fill = "none")+
+  scale_color_manual(values = c(
+    "Invaded" = "#6B9AD3",
+    "Uninvaded" = "#5A9E5A"
+  )) +
+  scale_fill_manual(values = c(
+    "Invaded" = "#D6E3F3",
+    "Uninvaded" = "#D8ECD8"
+  )) +
+  facet_wrap(~treatment)+
+   theme_classic(base_size = 10) +
+theme(
+  strip.background = element_blank(),
+  strip.text = element_text(face = "bold"),
+   legend.position = "bottom",
+  legend.title = element_text(face = "bold"),
+  legend.text = element_text(),
+  
+
+  axis.text = element_text(color = "black"),
+  axis.title = element_text(face = "bold"),
+
+  axis.line = element_line(linewidth = 0.6),
+  axis.ticks = element_line(linewidth = 0.5),
+
+  panel.grid = element_blank(),
+
+  plot.title = element_text(face = "bold", hjust = 0),
+  plot.margin = margin(6, 8, 6, 6)
+)
+
+  ggsave("figure4.tiff",
+       width = 5, height = 3,
+       units = "in", dpi = 300,
+       compression = "lzw")
+```
+
+
