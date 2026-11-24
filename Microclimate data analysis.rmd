@@ -1,0 +1,307 @@
+---
+title: "for_repo_temp"
+author: "dev bagdi"
+date: "2026-04-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(arm)
+library(lme4)
+library(ggplot2)
+library(forcats)
+library(xfun)
+library(emmeans)
+```
+
+
+1. Light data (photometer)
+a. import and tidy
+```{r}
+light<-read.csv("light_data.csv", header=T, na.strings = c("", "NA"))
+
+light_data<-light %>%
+  mutate(treatment = fct_recode(treatment,
+    "Invaded" = "Acacia",
+    "Uninvaded" = "Grassland"
+  )) %>% 
+  mutate(treatment = factor(treatment, levels = c("Uninvaded", "Invaded"))) %>% 
+  group_by(treatment) %>% 
+  summarise(mean_light = mean(light),
+            se_light =sd(light)/sqrt(n()))
+```
+
+b. plot (Figure S2b)
+```{r}
+ggplot(data = light_data %>% filter(treatment!="Cleared")) +
+  geom_point(
+    aes(x = treatment, y = mean_light, shape = treatment),size= 4)+
+  geom_errorbar(
+    aes(x = treatment, ymin = mean_light - se_light, ymax = mean_light + se_light, group = treatment), 
+    width = 0.05) +
+  labs(
+    x = "Environment",
+    y = "Mean (±SE) light availability (Lumen)",
+    shape = "Treatment"
+  ) +
+  scale_shape_manual(values = c("Invaded" = 5, "Uninvaded" = 3))+
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 10)) + 
+    theme_classic(base_size = 10) +
+theme(
+  strip.background = element_blank(),
+  strip.text = element_text(face = "bold"),
+
+  legend.position = "right",
+  legend.title = element_text(face = "bold"),
+  legend.text = element_text(),
+
+  axis.text = element_text(color = "black"),
+  axis.title = element_text(face = "bold"),
+
+  axis.line = element_line(linewidth = 0.6),
+  axis.ticks = element_line(linewidth = 0.5),
+
+  panel.grid = element_blank(),
+
+  plot.title = element_text(face = "bold", hjust = 0),
+  plot.margin = margin(6, 8, 6, 6)
+)
+
+ggsave("figureS2b.tiff",
+       width = 3.5, height = 4,
+       units = "in", dpi = 300,
+       compression = "lzw")
+```
+
+c. Test statistical significance
+```{r}
+stat_light<-lmer( light ~ treatment +(1|plot)+(1|time), data=light %>% filter(treatment!="Cleared"))
+display(stat_light)
+summary(stat_light)
+anova(stat_light)
+emmeans(stat_light, list(pairwise~treatment), adjust="tukey")
+```
+
+2. Temperature data from ibuttons
+a. Import and tidy
+```{r}
+october_ibuttons <- list.files(path = '/Users/devbagdi/Research/Decomposition in Nilgiri/manuscript/ibutton_data/october_24', pattern = "*.csv", full.names = TRUE)
+
+july_ibuttons<- list.files(path = '/Users/devbagdi/Research/Decomposition in Nilgiri/manuscript/ibutton_data/JULY_25', pattern = "*.csv", full.names = TRUE)
+
+
+#function for processing ibutton files with the plot name in file name
+process_file <- function(file_name) {
+  
+  # Read the CSV file
+  data <- read.csv(file_name, skip = 14)
+  
+  # Extract treatment and plot info
+  treatment <- case_when(
+    startsWith(basename(file_name), "i") ~ "acacia",
+    startsWith(basename(file_name), "u") ~ "grassland",
+    TRUE ~ "unknown"
+  )
+  plot_code <- substr(basename(file_name), 1, 2)
+  plot <- substr(plot_code, 2, 2)
+  
+  # Separate date-time, convert time, and classify day/night
+  data <- data %>%
+    separate(col = `Date.Time`, into = c("date", "time", "AMPM"), sep = " ") %>%
+    mutate(
+      Time_24hr = format(strptime(paste(time, AMPM), "%I:%M:%S %p"), "%H:%M:%S"),
+      Date_time = as.POSIXct(paste(date, Time_24hr), format = "%d/%m/%y %H:%M:%S"),
+      segment = case_when(
+      hour(Date_time) >= 0  & hour(Date_time) < 7  ~ "night",
+      hour(Date_time) >=7 & hour(Date_time) < 17 ~ "day",
+      hour(Date_time) >= 17 & hour(Date_time) <= 23 ~ "night")
+      
+    )
+  
+  # Add constant metadata columns
+  data <- data %>%
+    mutate(
+      treatment = treatment,
+      plot_code = plot_code,
+      plot = plot
+    )
+  
+  return(data)
+}
+
+
+# Apply the process_file function to all CSV files
+october_processed_data <- lapply(october_ibuttons, process_file)
+july_processed_data <- lapply(july_ibuttons, process_file)
+
+
+# Combine all the processed data into one dataframe
+october_combined_data <- bind_rows(october_processed_data)
+july_combined_data<-bind_rows(july_processed_data)
+temp_data<-bind_rows(october_combined_data, july_combined_data)
+```
+
+b. More tidy (dataframes)
+```{r}
+#different dataframes for analysis
+# Mean temp per treatment
+segment_mean <- temp_data %>%
+  group_by(treatment, segment) %>%
+  summarise(
+    temp_mean = mean(Value),
+    temp_se = sd(Value) / sqrt(n())
+  )
+
+#Table S1
+treatment_mean <- temp_data %>%
+  group_by(treatment) %>%
+  summarise(
+    temp_mean = mean(Value),
+    temp_se = sd(Value) / sqrt(n())
+  )
+```
+
+df for tempandk
+```{r}
+temp_data_plot<- temp_data |> 
+  filter(treatment!="cleared") |> 
+  group_by(treatment, plot_code) |> 
+  summarise(t=mean(Value))
+
+head(temp_data_plot)
+```
+
+
+c. Tidy and stats for daily difference in temperature
+```{r}
+#maxmin diff for each day in each site
+mean_temp_diff <- temp_data %>%
+  group_by(plot_code,date,treatment) %>%
+  summarise(
+    difference = max(Value)-min(Value)
+  )
+
+
+stat_temp_diff<-lmer( difference ~ treatment+(1|plot_code)+(1|date), data=mean_temp_diff %>% filter(treatment!="cleared"))
+display(stat_temp_diff)
+anova(stat_temp_diff)
+emmeans(stat_temp_diff, list(pairwise~treatment), adjust="tukey")
+```
+
+d. Dataframe for day-segments
+```{r}
+#mean temp for each segment in each day in each site
+mean_temp_segment <-temp_data %>%
+  group_by(treatment,segment) %>% 
+summarise(temp_mean=mean(Value, na.rm = TRUE),
+          temp_se = sd(Value, na.rm = TRUE)/sqrt(n()))
+
+```
+
+Stats for each segment
+- for day
+```{r}
+stat_temp_day<-lmer( Value ~ treatment+(1|plot_code)+(1|date), data=temp_data %>% filter(segment=="day"&treatment!="cleared"))
+display(stat_temp_day)
+anova(stat_temp_day)
+emmeans(stat_temp_day, ~treatment)
+emm_temp_day=emmeans(stat_temp_day, ~treatment)
+pairs(emm_temp_day, simple='each')
+```
+
+-for night
+```{r}
+stat_temp_night<-lmer( Value ~ treatment+(1|plot_code) +(1|date), data=temp_data %>% filter(segment=="night"&treatment!="cleared"))
+display(stat_temp_night)
+anova(stat_temp_night)
+emmeans(stat_temp_night, ~treatment)
+emm_temp_night = emmeans(stat_temp_night, ~treatment)
+pairs(emm_temp_night, simple='each')
+```
+
+e. Tidy for plotting hourly mean
+
+```{r}
+temp_data <- temp_data %>%
+  mutate(
+    DateTime_full = as.POSIXct(paste(date, Time_24hr), format = "%d/%m/%y %H:%M:%S")
+  )
+
+temp <- temp_data %>%
+  group_by(treatment, date, hour = floor_date(DateTime_full, "hour")) %>%
+  summarise(avg_temperature = mean(Value, na.rm = TRUE),
+            sd_temperature= sd(Value))
+
+#Splitting date and time column
+
+temp <- temp %>%
+  mutate(date = as_date(hour),
+         time = format(hour, "%H:%M:%S"))
+
+#taking hourly average for each days
+
+temp_ <- temp %>%
+  group_by( time, treatment) %>%
+  summarise(temperature = mean(avg_temperature),
+            temp_se=sd(avg_temperature)/sqrt(n())) %>%
+  ungroup()
+
+```
+
+plotting
+```{r}
+ggplot(
+  data = temp_,
+  mapping = aes(x = time, y = temperature, shape = treatment))+
+  geom_point(size = 2) +
+  scale_color_manual(
+labels = c(
+      "acacia" = "Invaded",
+      "grassland" = "Uninvaded"
+    )) +
+  scale_shape_manual(values = c("acacia" = 5, "grassland" = 3),
+labels = c(
+      "acacia" = "Invaded",
+      "grassland" = "Uninvaded"
+    )) + # Custom shapes
+  labs(x = "Time of the day", y = "Mean temperature (\u00b0C)", color="Habitat", shape="Habitat") +
+  scale_x_discrete(breaks = c("00:00:00", "06:00:00", "12:00:00", "18:00:00")) +
+  theme(
+  legend.title = element_text(size = 10, face = "bold"),
+  axis.text.x = element_text(angle = 0, vjust = 0.5)
+)+
+  theme_classic(base_size = 8) +
+theme(
+  strip.background = element_blank(),
+  strip.text = element_text(face = "bold"),
+
+  legend.position = "right",
+  legend.title = element_text(face = "bold"),
+  legend.text = element_text(),
+
+  axis.text = element_text(color = "black"),
+  axis.title = element_text(face = "bold"),
+
+  axis.line = element_line(linewidth = 0.6),
+  axis.ticks = element_line(linewidth = 0.5),
+
+  panel.grid = element_blank(),
+
+  plot.title = element_text(face = "bold", hjust = 0),
+  plot.margin = margin(6, 8, 6, 6)
+)
+ 
+ggsave("figures2a.tiff",
+       width = 5.2, height = 3,
+       units = "in", dpi = 300,
+       compression = "lzw")
+```
+
+
